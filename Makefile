@@ -1,9 +1,10 @@
+GLOG = /usr/local
+
 all:
-	g++ -std=c++11 -O3 -g -Wall src/* -shared -fPIC -o lib/libpipeline.so \
+	g++ -std=c++11 -O3 -g -Wall src/*.cc -shared -fPIC -o lib/libpipeline.so \
 		-I include \
-		-I /usr/local/include -L /usr/local/lib -lglog \
+		-I ${GLOG}/include -L ${GLOG}/lib -lglog \
 		-lpthread \
-		`pkg-config opencv --libs --cflags`
 
 #	g++ -std=c++11 -O3 -g -Wall test/*.cpp -o bin/test_pipeline \
 		-I include -L lib -lpipeline \

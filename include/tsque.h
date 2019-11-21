@@ -1,220 +1,169 @@
-#ifndef THREAD_SAFE_QUEUE_TSQUE_H_
-#define THREAD_SAFE_QUEUE_TSQUE_H_
+// Copyright (c) 2019 smarsu. All Rights Reserved.
 
-#include <glog/logging.h>
+#pragma once
 #include <deque>
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <vector>
+
+#include <glog/logging.h>
 
 namespace tsque {
 
-#define USLEEP(t) \
-{ \
-    std::this_thread::sleep_for(std::chrono::microseconds(t)); \
-}
+#define USLEEP(t) std::this_thread::sleep_for(std::chrono::microseconds(t));
 
 /* By default, push data to tail, pop data from head.
- * 
+ *
  */
-typedef enum TsQueuePosition {
-    TSQUE_HEAD,
-    TSQUE_TAIL
-} TsQueuePosition_t;
-
-template <typename T>
-class TsQueue {
-public:
-    TsQueue();
-    explicit TsQueue(int capacity);
-    ~TsQueue();
-
-    T operator[](int i);
-
-    void resize(int capacity);
-    int size();
-
-    int push(const T &data, TsQueuePosition_t pos=TSQUE_TAIL);
-    void push_n(const std::vector<T> &datas, TsQueuePosition_t pos=TSQUE_TAIL);
-
-    T pop(TsQueuePosition_t pos=TSQUE_HEAD);
-    /* pop_ex: pop data, if fail (e.g. no data in queue), the ret will be set fo false. */
-    T pop_ex(bool &ret, TsQueuePosition_t pos=TSQUE_HEAD);
-    std::vector<T> force_pop_n(int n, TsQueuePosition_t pos=TSQUE_HEAD);
-    std::vector<T> pop_n(int n, TsQueuePosition_t pos=TSQUE_HEAD);
-
-private:
-    inline int force_push(const T &data, TsQueuePosition_t pos);
-    T force_pop(TsQueuePosition_t pos);
-
-    std::deque<T> datas;
-    int _capacity = 0x7fffffff;
-    int _size = 0;
-    std::mutex locker;
+enum TsQuePosition : int {
+  TSQUE_HEAD,
+  TSQUE_TAIL,
 };
 
 template <typename T>
-TsQueue<T>::TsQueue() {}
+class TsQue {
+ public:
+  TsQue() {}
 
-template <typename T>
-TsQueue<T>::TsQueue(int capacity): _capacity(capacity) {}
+  explicit TsQue(int capacity) : capacity_(capacity) {}
 
-template <typename T>
-TsQueue<T>::~TsQueue() {}
+  ~TsQue() {}
 
-template <typename T>
-void TsQueue<T>::resize(int capacity) {
-    locker.lock();
-    _capacity = capacity;
-    locker.unlock();
-}
-
-template <typename T>
-T TsQueue<T>::operator[](int i) {
-    locker.lock();
+  T operator[](int i) {
+    locker_.lock();
     if (i < 0) {
-        i += _size;
+      i += size_;
     }
-    T &data = datas[i];
-    locker.unlock();
-    return data;
-}
+    CHECK(i >= 0 && i < size_) << "index: " << i << " border: " << size_;
+    T data = datas_[i];
+    locker_.unlock();
+    return std::move(data);
+  }
 
-template <typename T>
-inline int TsQueue<T>::force_push(const T &data, TsQueuePosition_t pos) {
-    int ret = 0;
-    switch (pos) {
-        case TSQUE_TAIL:
-            datas.emplace_back(data);
-            ++_size;
-            break;
-        case TSQUE_HEAD:
-            datas.emplace_front(data);
-            ++_size;
-            break;
-        default:
-            ret = -1;
-            break;
-    }
-    return ret;
-}
+  void reserve(int capacity) { capacity_ = capacity; }
 
-/* Push data to deque. It will block if the size equal to capacity.
- * 
- */
-template <typename T>
-int TsQueue<T>::push(const T &data, TsQueuePosition_t pos) {
-    int ret = 0;
-    locker.lock();
-    while (_size >= _capacity) {
-        locker.unlock();
-        USLEEP(100);
-        locker.lock();
+  int size() { return size_; }
+
+  void push(const T &data, TsQuePosition pos = TSQUE_TAIL) {
+    locker_.lock();
+
+    while (size_ >= capacity_) {
+      locker_.unlock();
+      USLEEP(100);
+      locker_.lock();
     }
 
     force_push(data, pos);
-    locker.unlock();
-    return ret;
-}
+    locker_.unlock();
+  }
 
-template <typename T>
-T TsQueue<T>::force_pop(TsQueuePosition_t pos) {
-    T data;
-    switch (pos) {
-        case TSQUE_TAIL:
-            data = datas.back();
-            datas.pop_back();
-            --_size;
-            break;
-        case TSQUE_HEAD:
-            data = datas.front();
-            datas.pop_front();
-            --_size;
-            break;
-        default:
-            break;
+  void push_n(const std::vector<T> &datas, TsQuePosition pos = TSQUE_TAIL) {
+    for (const auto &data : datas) {
+      push(data, pos);
     }
-    return std::move(data);
-}
+  }
 
-/* Pop data from deque. It will block if the size is 0. 
- *
- */
-template <typename T>
-T TsQueue<T>::pop(TsQueuePosition_t pos) {
+  T pop(TsQuePosition pos = TSQUE_HEAD) {
     T data;
-    locker.lock();
-    while (_size <= 0) {
-        locker.unlock();
-        USLEEP(100);
-        locker.lock();
+    locker_.lock();
+
+    while (size_ <= 0) {
+      locker_.unlock();
+      USLEEP(100);
+      locker_.lock();
     }
 
     data = force_pop(pos);
-    locker.unlock();
+    locker_.unlock();
     return std::move(data);
-}
+  }
 
-/* pop_ex will not block but may false when queue is empty.
- * 
- */
-template <typename T>
-T TsQueue<T>::pop_ex(bool &ret, TsQueuePosition_t pos) {
+  /* pop_ex: pop data, if fail (e.g. no data in queue), the ret will be set fo
+   * false. */
+  T pop_ex(bool *ret, TsQuePosition pos = TSQUE_HEAD) {
     T data;
-    locker.lock();
-    if (_size <= 0) {
-        ret = false;
-        locker.unlock();
-        return std::move(data);
+    locker_.lock();
+    if (size_ <= 0) {
+      *ret = false;
+      locker_.unlock();
+      return data;
+    } else {
+      *ret = true;
+      data = force_pop(pos);
+      locker_.unlock();
+      return std::move(data);
     }
-    else {
-        ret = true;
-        data = force_pop(pos);
-        locker.unlock();
-        return std::move(data);
-    }
-}
+  }
 
-template <typename T>
-std::vector<T> TsQueue<T>::force_pop_n(int n, TsQueuePosition_t pos) {
+  // wait to pop n datas.
+  std::vector<T> force_pop_n(int n, TsQuePosition pos = TSQUE_HEAD) {
     std::vector<T> list;
     for (int i = 0; i < n; ++i) {
-        list.emplace_back(pop(pos));
+      list.emplace_back(pop(pos));
     }
     return std::move(list);
-}
+  }
 
-template <typename T> 
-std::vector<T> TsQueue<T>::pop_n(int n, TsQueuePosition_t pos) {
+  // pop at least one data, at most n data
+  std::vector<T> pop_n(int n, TsQuePosition pos = TSQUE_HEAD) {
     std::vector<T> list;
     bool ret;
     list.emplace_back(pop(pos));
     for (int i = 1; i < n; ++i) {
-        T data = pop_ex(ret, pos);
-        if (ret == false) {
-            break;
-        }
-        list.emplace_back(data);
+      T data = pop_ex(&ret, pos);
+      if (ret == false) {
+        break;
+      }
+      list.emplace_back(data);
     }
     return std::move(list);
-}
+  }
 
-template <typename T>
-void TsQueue<T>::push_n(const std::vector<T> &datas, TsQueuePosition_t pos) {
-    for (auto data : datas) {
-        push(data, pos);
+ private:
+  // push without lock
+  void force_push(const T &data, TsQuePosition pos) {
+    switch (pos) {
+      case TSQUE_TAIL:
+        datas_.emplace_back(data);
+        ++size_;
+        break;
+      case TSQUE_HEAD:
+        datas_.emplace_front(data);
+        ++size_;
+        break;
+
+      default:
+        break;
     }
-}
+  }
 
-template <typename T>
-int TsQueue<T>::size() {
-    int qsize;
-    locker.lock();
-    qsize = _size;
-    locker.unlock();
-    return qsize;
-}
+  // pop without lock
+  T force_pop(TsQuePosition pos) {
+    T data;
+    switch (pos) {
+      case TSQUE_TAIL:
+        data = datas_.back();
+        datas_.pop_back();
+        --size_;
+        break;
+      case TSQUE_HEAD:
+        data = datas_.front();
+        datas_.pop_front();
+        --size_;
+        break;
+
+      default:
+        break;
+    }
+    return std::move(data);
+  }
+
+ private:
+  std::deque<T> datas_;
+  int capacity_ = 0x7fffffff;
+  int size_ = 0;
+  std::mutex locker_;
+};
 
 }  // namespace tsque
-
-#endif  // THREAD_SAFE_QUEUE_TSQUE_H_
