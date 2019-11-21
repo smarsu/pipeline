@@ -3,7 +3,6 @@
 #pragma once
 #include <memory>
 #include <thread>
-#include <utility>
 #include <vector>
 
 #include <glog/logging.h>
@@ -41,6 +40,7 @@ class ForwardPipeline {
 
     return pipe;
   }
+
   template <typename Ret, typename... Args, typename T, typename... TArgs>
   shared_tsque(Ret) addTaskStackBatch(int num_threads,
                                       Ret (*func)(Args...),
@@ -67,6 +67,7 @@ class ForwardPipeline {
 
     return pipe;
   }
+  
   template <typename Ret, typename... Args, typename T, typename... TArgs>
   shared_tsque(Ret) addTaskSplitBatch(int num_threads,
                                       std::vector<Ret> (*func)(Args...),
@@ -92,6 +93,36 @@ class ForwardPipeline {
 
     return pipe;
   }
+
+  template <typename T>
+  shared_tsque(T) stackPipe(int num_threads, 
+                            std::vector<shared_tsque(T)> in) {
+    CHECK_GE(num_threads, 1);
+
+    shared_tsque(T) pipe(new tsque::TsQue<T>);
+
+    auto stack_pipe = [](std::vector<shared_tsque(T)> in, shared_tsque(T) out) {
+      bool pop_suc = false;
+      while (true) {
+        for (auto &in_pipe : in) {
+          auto data = in_pipe->pop_ex(pop_suc);
+
+          if (pop_suc) {
+            out->push(data);
+          }
+        }
+      }
+    };
+
+    for (int i = 0; i < num_threads; ++i) {
+      std::thread *t = new std::thread(stack_pipe, in, pipe);
+      threads.push_back(t);
+    }
+
+    return pipe;
+  }
+
+ private:
   template <typename T, typename T1, typename T2, typename... TArgs>
   void runTask(T func,
                shared_tsque(T1) in,
@@ -103,9 +134,10 @@ class ForwardPipeline {
 
       auto top = func(bottom, rest...);
 
-      out->push(std::move(top));
+      out->push(top);
     }
   }
+
   template <typename T, typename T1, typename T2, typename... TArgs>
   void runTaskStackBatch(T func,
                          shared_tsque(T1) in,
@@ -118,9 +150,10 @@ class ForwardPipeline {
 
       auto tops = func(bottoms, rest...);
 
-      out->push(std::move(tops));
+      out->push(tops);
     }
   }
+
   template <typename T, typename T1, typename T2, typename... TArgs>
   void runTaskSplitBatch(T func,
                          shared_tsque(T1) in,
@@ -132,35 +165,8 @@ class ForwardPipeline {
 
       auto tops = func(bottoms, rest...);
 
-      out->push_n(std::move(tops));
+      out->push_n(tops);
     }
-  }
-
-  template <typename T>
-  shared_tsque(T) stackPipe(int num_threads, std::vector<shared_tsque(T)> in) {
-    CHECK_GE(num_threads, 1);
-
-    shared_tsque(T) pipe(new tsque::TsQue<T>);
-
-    auto stack_pipe = [](std::vector<shared_tsque(T)> in, shared_tsque(T) out) {
-      bool pop_suc = false;
-      while (true) {
-        for (auto &in_pipe : in) {
-          auto data = in_pipe->pop_ex(pop_suc);
-
-          if (pop_suc) {
-            out->push(std::move(data));
-          }
-        }
-      }
-    };
-
-    for (int i = 0; i < num_threads; ++i) {
-      std::thread *t = new std::thread(stack_pipe, in, pipe);
-      threads.push_back(t);
-    }
-
-    return pipe;
   }
 
   ~ForwardPipeline() {
